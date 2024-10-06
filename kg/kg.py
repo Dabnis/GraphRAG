@@ -132,7 +132,7 @@ class KnowledgeGraph:
             [
                 (
                     "system",
-                    "You are extracting organizations, people, locations entities from the text.",
+                    "You are extracting planets and other celestial bodies as entities from the text.",
                 ),
                 (
                     "human",
