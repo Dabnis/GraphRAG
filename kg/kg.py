@@ -1,6 +1,8 @@
+import datetime
 import re
 import time
 import warnings
+from collections.abc import Iterable
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage
@@ -70,7 +72,7 @@ class KnowledgeGraph:
 
     def add_knowledge(self, subject: str) -> None:
         # One example of how we can 'gain'/add knowledge to our knowledge graph.
-        raw_docs = WikipediaLoader(query=subject, load_max_docs=25).load()
+        raw_docs = WikipediaLoader(query=subject, load_max_docs=10).load()
         # CSV loader; pdf loader; web scraping loader; MySql loader
         # Set the chunking/text splitting strategy
         """
@@ -84,14 +86,14 @@ class KnowledgeGraph:
         text_splitter = TokenTextSplitter(chunk_size=512, chunk_overlap=24)
         # Here we just take the first 3 chunks as an example. I need to look at making this more dynamic & relative
         # to subject in hand.
-        docs = text_splitter.split_documents(raw_docs[:20])
+        docs = text_splitter.split_documents(raw_docs[:10])
         # Transform our chunks -> graph documents
         graph_docs = self.graph_transformer.convert_to_graph_documents(docs)
         # ADD to our neo4j
         self.neo4j.add_graph_documents(
             graph_docs,
             include_source=True,
-            baseEntityLabel=True,
+            baseEntityLabel=True,   # See FULL TEXT INDEX below
         )
         # Vectorise Document node text content. Presently all
         # create vector index
@@ -146,30 +148,33 @@ class KnowledgeGraph:
         entities = chain.invoke({"question": question})
         # Init result string
         result = ""
-        for entity in entities.names:
-            # Fix for deprecation warnings.
-            response = self.neo4j.query(
-                """
-                CALL db.index.fulltext.queryNodes('entity', $query, {limit:2})
-                YIELD node, score
-                CALL (node) {
-                    WITH node
-                    MATCH (node)-[r:!MENTIONS]->(neighbor)
-                    RETURN node.id + ' - ' + type(r) + ' -> ' + neighbor.id AS output
-                    UNION ALL
-                    WITH node
-                    MATCH (node)<-[r:!MENTIONS]-(neighbor)
-                    RETURN neighbor.id + ' - ' + type(r) + ' -> ' + node.id AS output
-                }
-                WITH output
-                RETURN output LIMIT 50
-                """,
-                {"query": entity},
-            )
+        if isinstance(entities.names, Iterable):
+            for entity in entities.names:
+                # Fix for deprecation warnings.
+                response = self.neo4j.query(
+                    """
+                    CALL db.index.fulltext.queryNodes('entity', $query, {limit:2})
+                    YIELD node, score
+                    CALL (node) {
+                        WITH node
+                        MATCH (node)-[r:!MENTIONS]->(neighbor)
+                        RETURN node.id + ' - ' + type(r) + ' -> ' + neighbor.id AS output
+                        UNION ALL
+                        WITH node
+                        MATCH (node)<-[r:!MENTIONS]-(neighbor)
+                        RETURN neighbor.id + ' - ' + type(r) + ' -> ' + node.id AS output
+                    }
+                    WITH output
+                    RETURN output LIMIT 50
+                    """,
+                    {"query": entity},
+                )
 
-            # Collate the response
-            result += "\n".join([el["output"] for el in response])
-        return result
+                # Collate the response
+                result += "\n".join([el["output"] for el in response])
+            return result
+        else:
+            print("No entities identified in:", question)
 
     # Combine full text & vector similarity search outputs
     def _retriever(self, question: str) -> str:
@@ -202,7 +207,10 @@ class KnowledgeGraph:
         Structured data: {structured_data}
         Unstructured data: {unstructured_data}
         """
+        # Clean it up
         response = self.remove_ws(resp)
+        # Save context to file
+        self.log_context(response)
         return response
 
     def _format_chat_history(self,chat_history: List[Tuple[str, str]]) -> List:
@@ -225,6 +233,27 @@ class KnowledgeGraph:
         cleaned = re.sub(pattern, " ", text)
 
         return cleaned
+
+    def log_context(self, text, filename_prefix="context_dump_"):
+        """Saves the given text to a file with a timestamped filename.
+
+        Args:
+            text (str): The text to be saved.
+            filename_prefix (str, optional): The prefix for the filename. Defaults to "context_dump_".
+        """
+
+        context_log_dir = 'context_logs/'
+
+        # Create the directory if it doesn't exist
+        os.makedirs(context_log_dir, exist_ok=True)
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filename = context_log_dir + filename_prefix + timestamp + ".txt"
+
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        print(f"Context of size {len(text)} saved to {filename}")
 
     def interrogate(self, query: str) -> str:
         # Condense a chat history and follow-up question into a standalone question
@@ -292,6 +321,7 @@ class KnowledgeGraph:
         return  chain.invoke(
             {
                 "question": query,
+                # To make this 'conversational' look at how you can update the chat_history after each response
                 # "chat_history": [
                 #     ("Who was the first emperor?", "Augustus was the first emperor.")
                 # ],
