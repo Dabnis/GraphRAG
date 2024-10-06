@@ -70,7 +70,7 @@ class KnowledgeGraph:
 
     def add_knowledge(self, subject: str) -> None:
         # One example of how we can 'gain'/add knowledge to our knowledge graph.
-        raw_docs = WikipediaLoader(query=subject).load()
+        raw_docs = WikipediaLoader(query=subject, load_max_docs=25).load()
         # CSV loader; pdf loader; web scraping loader; MySql loader
         # Set the chunking/text splitting strategy
         """
@@ -84,7 +84,7 @@ class KnowledgeGraph:
         text_splitter = TokenTextSplitter(chunk_size=512, chunk_overlap=24)
         # Here we just take the first 3 chunks as an example. I need to look at making this more dynamic & relative
         # to subject in hand.
-        docs = text_splitter.split_documents(raw_docs[:3])
+        docs = text_splitter.split_documents(raw_docs[:20])
         # Transform our chunks -> graph documents
         graph_docs = self.graph_transformer.convert_to_graph_documents(docs)
         # ADD to our neo4j
@@ -100,6 +100,7 @@ class KnowledgeGraph:
             node_label="Document",
             text_node_properties=["text"],
             embedding_node_property="embedding",
+            index_name='dabnis',
         )
         # Initialise full text index. Cypher Query!
         self.neo4j.query("CREATE FULLTEXT INDEX entity IF NOT EXISTS FOR (e:__Entity__) ON EACH [e.id]")
@@ -131,11 +132,11 @@ class KnowledgeGraph:
             [
                 (
                     "system",
-                    "You are extracting organization and people entities from the text.",
+                    "You are extracting organizations, people, locations entities from the text.",
                 ),
                 (
                     "human",
-                    "Use the given format to extract information from the following "
+                    "Extract information from the following "
                     "input: {question}",
                 ),
             ]
@@ -146,23 +147,26 @@ class KnowledgeGraph:
         # Init result string
         result = ""
         for entity in entities.names:
-            print(f" Getting Entity: {entity}")
+            # Fix for deprecation warnings.
             response = self.neo4j.query(
-                """CALL db.index.fulltext.queryNodes('entity', $query, {limit:2})
-                YIELD node,score
-                CALL {
-                  WITH node
-                  MATCH (node)-[r:!MENTIONS]->(neighbor)
-                  RETURN node.id + ' - ' + type(r) + ' -> ' + neighbor.id AS output
-                  UNION ALL
-                  WITH node
-                  MATCH (node)<-[r:!MENTIONS]-(neighbor)
-                  RETURN neighbor.id + ' - ' + type(r) + ' -> ' +  node.id AS output
+                """
+                CALL db.index.fulltext.queryNodes('entity', $query, {limit:2})
+                YIELD node, score
+                CALL (node) {
+                    WITH node
+                    MATCH (node)-[r:!MENTIONS]->(neighbor)
+                    RETURN node.id + ' - ' + type(r) + ' -> ' + neighbor.id AS output
+                    UNION ALL
+                    WITH node
+                    MATCH (node)<-[r:!MENTIONS]-(neighbor)
+                    RETURN neighbor.id + ' - ' + type(r) + ' -> ' + node.id AS output
                 }
+                WITH output
                 RETURN output LIMIT 50
                 """,
                 {"query": entity},
             )
+
             # Collate the response
             result += "\n".join([el["output"] for el in response])
         return result
@@ -172,12 +176,31 @@ class KnowledgeGraph:
         # Full text search, nearest neighbour, etc
         structured_data = self._structured_retriever(question)
         # Vector search
-        unstructured_data = [
-            el.page_content for el in self.vector_index.similarity_search(question)
-        ]
+        v_results = self.neo4j.query(
+            """
+            WITH genai.vector.encode(
+            $question, "OpenAI", { token: $api_key }) AS userEmbedding
+            CALL db.index.vector.queryNodes('vector', 6, userEmbedding)
+            YIELD node, score
+            RETURN node.text, score
+            """,
+            {"question": question, "api_key": OPENAI_API_KEY}
+        )
+        # Set a threshold of acceptability of response.
+        threshold = .89
+        # Filter results based on the threshold
+        filtered_results = [result for result in v_results if result['score'] > threshold]
+        # Sort the filtered results by score in descending order
+        sorted_data = sorted(filtered_results, key=lambda x: x['score'], reverse=True)
+        # Build a single text block.
+        unstructured_data = " ".join(result['node.text'] for result in sorted_data)
+
+        # unstructured_data = [
+        #     el.page_content for el in self.vector_index.similarity_search(question)
+        # ]
         resp = f"""
         Structured data: {structured_data}
-        Unstructured data: {"#Document ".join(unstructured_data)}
+        Unstructured data: {unstructured_data}
         """
         response = self.remove_ws(resp)
         return response
@@ -269,9 +292,9 @@ class KnowledgeGraph:
         return  chain.invoke(
             {
                 "question": query,
-                "chat_history": [
-                    ("Who was the first emperor?", "Augustus was the first emperor.")
-                ],
+                # "chat_history": [
+                #     ("Who was the first emperor?", "Augustus was the first emperor.")
+                # ],
             }
         )
 
