@@ -26,8 +26,8 @@ langsmith==0.1.96
 marshmallow==3.21.3
 multidict==6.0.5
 mypy-extensions==1.0.0
-neo4j==5.23.0
 numpy==1.26.4
+neo4j==5.23.0
 openai==1.38.0
 orjson==3.10.6
 packaging==24.1

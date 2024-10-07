@@ -86,7 +86,7 @@ class KnowledgeGraph:
         text_splitter = TokenTextSplitter(chunk_size=512, chunk_overlap=24)
         # Here we just take the first 3 chunks as an example. I need to look at making this more dynamic & relative
         # to subject in hand.
-        docs = text_splitter.split_documents(raw_docs[:10])
+        docs = text_splitter.split_documents(raw_docs[:3])
         # Transform our chunks -> graph documents
         graph_docs = self.graph_transformer.convert_to_graph_documents(docs)
         # ADD to our neo4j
@@ -101,8 +101,7 @@ class KnowledgeGraph:
             OpenAIEmbeddings(),
             node_label="Document",
             text_node_properties=["text"],
-            embedding_node_property="embedding",
-            index_name='dabnis',
+            embedding_node_property="embedding"
         )
         # Initialise full text index. Cypher Query!
         self.neo4j.query("CREATE FULLTEXT INDEX entity IF NOT EXISTS FOR (e:__Entity__) ON EACH [e.id]")
@@ -124,7 +123,8 @@ class KnowledgeGraph:
         full_text_query += f" {words[-1]}~2"
         return full_text_query.strip()
 
-    # Fulltext index query
+
+    # Collect Relationships
     def _structured_retriever(self, question: str) -> str:
         """
         Collects the neighborhood of entities mentioned
@@ -134,7 +134,7 @@ class KnowledgeGraph:
             [
                 (
                     "system",
-                    "You are extracting planets and other celestial bodies as entities from the text.",
+                    "You are extracting planets, celestial bodies  and other key pieces entities from the text.",
                 ),
                 (
                     "human",
@@ -150,7 +150,7 @@ class KnowledgeGraph:
         result = ""
         if isinstance(entities.names, Iterable):
             for entity in entities.names:
-                # Fix for deprecation warnings.
+                # Deprecation fix.
                 response = self.neo4j.query(
                     """
                     CALL db.index.fulltext.queryNodes('entity', $query, {limit:2})
@@ -169,7 +169,6 @@ class KnowledgeGraph:
                     """,
                     {"query": entity},
                 )
-
                 # Collate the response
                 result += "\n".join([el["output"] for el in response])
             return result
@@ -211,6 +210,7 @@ class KnowledgeGraph:
         response = self.remove_ws(resp)
         # Save context to file
         self.log_context(response)
+
         return response
 
     def _format_chat_history(self,chat_history: List[Tuple[str, str]]) -> List:
@@ -228,7 +228,6 @@ class KnowledgeGraph:
     def remove_ws(self,text: str) -> str:
         # Regular expression pattern to match multiple consecutive whitespace characters
         pattern = r"\s+"
-
         # Replace multiple consecutive whitespace characters with a single space
         cleaned = re.sub(pattern, " ", text)
 
@@ -254,6 +253,7 @@ class KnowledgeGraph:
             f.write(text)
 
         print(f"Context of size {len(text)} saved to {filename}")
+
 
     def interrogate(self, query: str) -> str:
         # Condense a chat history and follow-up question into a standalone question
@@ -285,7 +285,7 @@ class KnowledgeGraph:
             RunnableLambda(lambda x: x["question"]),
         )
         # Now for our final chain!
-        template = """Answer the question based only on the following context:
+        template = """It is IMPORTANT that you Answer the question based only on the following context:
         {context}
 
         Question: {question}
@@ -301,6 +301,7 @@ class KnowledgeGraph:
         of ALL relevant information related to the incoming query.
         This will improve stability; accuracy; repeatability. Repeatability is the key to interfacing
         AI systems with existing 'logical' processes. :)
+        The above is based on the assumption that the GraphDB will 'stream' the context in real time during an AI process
         """
 
         # context = search_query | self._retriever
