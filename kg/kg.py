@@ -72,7 +72,7 @@ class KnowledgeGraph:
 
     def add_knowledge(self, subject: str) -> None:
         # One example of how we can 'gain'/add knowledge to our knowledge graph.
-        raw_docs = WikipediaLoader(query=subject, load_max_docs=10).load()
+        raw_docs = WikipediaLoader(query=subject, load_max_docs=25).load()
         # CSV loader; pdf loader; web scraping loader; MySql loader
         # Set the chunking/text splitting strategy
         """
@@ -86,9 +86,19 @@ class KnowledgeGraph:
         text_splitter = TokenTextSplitter(chunk_size=512, chunk_overlap=24)
         # Here we just take the first 3 chunks as an example. I need to look at making this more dynamic & relative
         # to subject in hand.
-        docs = text_splitter.split_documents(raw_docs[:3])
+        docs = text_splitter.split_documents(raw_docs[:10])
         # Transform our chunks -> graph documents
-        graph_docs = self.graph_transformer.convert_to_graph_documents(docs)
+        """
+        Rather than just returning arbitrary nodes & relationships, we need to apply some constraints:
+        see: https://python.langchain.com/v0.2/docs/how_to/graph_constructing/ 
+        """
+        graph_transformer = LLMGraphTransformer(
+            self.llm,
+            allowed_nodes=["Planet","Moon", "Star", "Asteroid"],
+            allowed_relationships=["Orbits", "member of"],
+            node_properties=["description", "mass", "equatorial radius", "distance from earth"]
+        )
+        graph_docs = graph_transformer.convert_to_graph_documents(docs)
         # ADD to our neo4j
         self.neo4j.add_graph_documents(
             graph_docs,
@@ -134,7 +144,7 @@ class KnowledgeGraph:
             [
                 (
                     "system",
-                    "You are extracting planets, celestial bodies  and other key pieces entities from the text.",
+                    "You are extracting, details relevant to the univers, solar system, planets and heavenly bodies as entities from the text.",
                 ),
                 (
                     "human",
@@ -285,12 +295,16 @@ class KnowledgeGraph:
             RunnableLambda(lambda x: x["question"]),
         )
         # Now for our final chain!
-        template = """It is IMPORTANT that you Answer the question based only on the following context:
-        {context}
-
-        Question: {question}
-        Use natural language and be concise.
-        Answer:"""
+        # template = """It is IMPORTANT that you Answer the question based only on the following context:
+        # {context}
+        #
+        # Question: {question}
+        # Use natural language and be concise.
+        # Answer:"""
+        template = """
+        Summarise this {context} to a length of no more than 100 words, maintaining all major context related to this {question}
+        Answer:
+        """
         prompt = ChatPromptTemplate.from_template(template)
 
         """
