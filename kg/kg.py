@@ -72,7 +72,8 @@ class KnowledgeGraph:
 
     def add_knowledge(self, subject: str) -> None:
         # One example of how we can 'gain'/add knowledge to our knowledge graph.
-        raw_docs = WikipediaLoader(query=subject, load_max_docs=25).load()
+        # If you get too much unrelated info, reduce the load_max_docs value.
+        raw_docs = WikipediaLoader(query=subject, load_max_docs=5).load()
         # CSV loader; pdf loader; web scraping loader; MySql loader
         # Set the chunking/text splitting strategy
         """
@@ -84,9 +85,8 @@ class KnowledgeGraph:
         and its required resources.
         """
         text_splitter = TokenTextSplitter(chunk_size=512, chunk_overlap=24)
-        # Here we just take the first 3 chunks as an example. I need to look at making this more dynamic & relative
-        # to subject in hand.
-        docs = text_splitter.split_documents(raw_docs[:10])
+        # Choose how many of the wiki results you want to use
+        docs = text_splitter.split_documents(raw_docs[:5])
         # Transform our chunks -> graph documents
         """
         Rather than just returning arbitrary nodes & relationships, we need to apply some constraints:
@@ -94,9 +94,9 @@ class KnowledgeGraph:
         """
         graph_transformer = LLMGraphTransformer(
             self.llm,
-            allowed_nodes=["Planet","Moon", "Star", "Asteroid"],
-            allowed_relationships=["Orbits", "member of"],
-            node_properties=["description", "mass", "equatorial radius", "distance from earth"]
+            allowed_nodes=[ "Sun", "Planet","Moon", "Star", "Asteroid"],
+            allowed_relationships=["Orbits", "Member of"],
+            node_properties=["description", "mass", "equatorial radius", "distance from earth", "surface conditions"]
         )
         graph_docs = graph_transformer.convert_to_graph_documents(docs)
         # ADD to our neo4j
@@ -301,6 +301,8 @@ class KnowledgeGraph:
         # Question: {question}
         # Use natural language and be concise.
         # Answer:"""
+
+        # Here I am asking the LLM to just summarise the output of the GraphDB
         template = """
         Summarise this {context} to a length of no more than 100 words, maintaining all major context related to this {question}
         Answer:
